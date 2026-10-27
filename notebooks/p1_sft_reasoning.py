@@ -12,11 +12,13 @@
 # > Luôn chạy thử bước 1–3 với `Qwen2.5-0.5B-Instruct` (100 mẫu, 1 epoch, ~3 phút trên T4) trước khi bật L4/A100 cho `1.5B`.
 
 # %% [markdown]
-# ## 1. Chuẩn bị dữ liệu Reasoning Cold-Start (`simplescaling/s1K-1.1` hoặc `GAIR/LIMO`)
+# ## 1. Chuẩn bị dữ liệu Reasoning Cold-Start (`s1K-1.1` + `LIMO` + `OpenR1` streaming)
 # Lọc chỉ giữ các mẫu có độ dài $\le 4096$ tokens và có `\boxed{}` để model 1.5B không bị ngợp bởi các trace 16k tokens.
+# - Dùng `--source s1k` để xem số mẫu thu được từ riêng `s1K-1.1` (sau khi cứu `\boxed{}` từ `deepseek_attempt`).
+# - Dùng `--source mix` (mặc định) để lấy hết các mẫu $\le 4096$ của `s1K` + `LIMO` và bù thêm từ `OpenR1-Math-220k` (streaming, không tốn đĩa) cho đủ đúng 1,000 mẫu chất lượng cao.
 # %%
 # !python data/build_reasoning_sft.py \
-#   --source s1k \
+#   --source mix \
 #   --tokenizer Qwen/Qwen2.5-1.5B-Instruct \
 #   --max_tokens 4096 \
 #   --max_samples 1000 \

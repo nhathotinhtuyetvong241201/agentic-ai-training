@@ -19,13 +19,14 @@ def test_format_assistant_structure():
 def test_extract_s1k():
     row = {
         "question": "What is 2+2?",
-        "deepseek_thinking_trajectory": "Let me calculate 2+2=4.",
-        "solution": "The answer is \\boxed{4}.",
+        "deepseek_thinking_trajectory": "Let me calculate 2+2=4. So \\boxed{4}.",
+        "solution": "The answer is 4.",
     }
     q, think, sol = extract_s1k(row)
     assert q == "What is 2+2?"
     assert "2+2=4" in think
     assert "\\boxed{4}" in sol
+
 
 
 def test_collator_padding():
