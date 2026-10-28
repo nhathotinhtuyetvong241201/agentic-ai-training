@@ -1,0 +1,25 @@
+# Engine suy luận (nên đặt làm mốc vì vLLM khóa chặt phiên bản PyTorch và Transformers)
+
+vllm==0.32.0
+
+
+
+# Hệ sinh thái Hugging Face (tương thích với ràng buộc transformers>=5.16.1,<5.20.0 của vLLM 0.32.0)
+
+transformers==5.19.0
+
+huggingface_hub==1.32.0
+
+datasets==5.1.0
+
+peft==0.21.2
+
+trl==1.16.0
+
+
+
+# Công cụ theo dõi thực nghiệm và kiểm thử
+
+wandb==0.31.0
+
+pytest==9.1.1
