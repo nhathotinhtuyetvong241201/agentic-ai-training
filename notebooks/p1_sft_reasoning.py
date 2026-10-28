@@ -12,6 +12,15 @@
 # > Luôn chạy thử bước 1–3 với `Qwen2.5-0.5B-Instruct` (100 mẫu, 1 epoch, ~3 phút trên T4) trước khi bật L4/A100 cho `1.5B`.
 
 # %% [markdown]
+# ## 0. Sửa môi trường Colab
+# Colab cài sẵn `torchao` bản cũ; PEFT mới kiểm tra version torchao khi wrap LoRA và báo
+# `ImportError: Found an incompatible version of torchao`. Pipeline này không dùng torchao
+# (không quantization FP8/int4) → gỡ đi. Sau đó Runtime > Restart session.
+# %%
+# !pip uninstall -y torchao
+# !python -c "import peft, transformers, torch; print(peft.__version__, transformers.__version__, torch.__version__)"
+
+# %% [markdown]
 # ## 1. Chuẩn bị dữ liệu Reasoning Cold-Start (`s1K-1.1` + `LIMO` + `OpenR1` streaming)
 # Lọc chỉ giữ các mẫu có độ dài $\le 4096$ tokens và có `\boxed{}` để model 1.5B không bị ngợp bởi các trace 16k tokens.
 # - Dùng `--source s1k` để xem số mẫu thu được từ riêng `s1K-1.1` (sau khi cứu `\boxed{}` từ `deepseek_attempt`).

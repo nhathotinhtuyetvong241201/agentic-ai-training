@@ -18,7 +18,7 @@ Chạy chính thức trên L4/A100 (1.5B):
     --data data/processed/reasoning_sft.jsonl --output_dir checkpoints/qwen1.5b-sft-think \
     --max_seq_len 4096 --epochs 3 --batch_size 2 --grad_accum 8 --lr 1e-4
 """
-import argparse, pathlib, sys
+import argparse, math, pathlib, sys
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
@@ -92,7 +92,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        torch_dtype=dtype,
+        dtype=dtype,
         device_map="auto",
         attn_implementation="sdpa",
     )
@@ -109,6 +109,12 @@ def main():
     model = get_peft_model(model, peft_cfg)
     model.print_trainable_parameters()
 
+    # transformers v5 bỏ `warmup_ratio` → tự tính warmup_steps (int) để tương thích cả v4/v5.
+    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
+    total_steps = math.ceil(steps_per_epoch * args.epochs)
+    warmup_steps = max(1, int(0.05 * total_steps))
+    print(f"total_steps={total_steps}, warmup_steps={warmup_steps}")
+
     train_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
@@ -116,7 +122,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        warmup_steps=warmup_steps,
         weight_decay=0.01,
         bf16=bf16_ok,
         fp16=not bf16_ok and torch.cuda.is_available(),
