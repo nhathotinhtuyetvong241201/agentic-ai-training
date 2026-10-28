@@ -22,7 +22,7 @@
 #   --tokenizer Qwen/Qwen2.5-1.5B-Instruct \
 #   --max_tokens 4096 \
 #   --max_samples 1000 \
-#   --out data/processed/s1k_filtered.jsonl
+#   --out data/s1k_filtered.jsonl
 
 # %% [markdown]
 # ## 2. Kiểm tra bằng mắt 1 mẫu dữ liệu & vùng tính Loss (`show_mask`)
@@ -34,7 +34,7 @@ from transformers import AutoTokenizer
 from chat_utils import build_labels, show_mask
 
 tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
-with open("data/processed/s1k_filtered.jsonl") as f:
+with open("data/s1k_filtered.jsonl") as f:
     sample = json.loads(f.readline())
 
 ids, labs = build_labels(tok, sample["messages"])
@@ -47,7 +47,7 @@ print(show_mask(tok, ids[:400], labs[:400]))
 # %%
 # !python train/sft.py \
 #   --model Qwen/Qwen2.5-0.5B-Instruct \
-#   --data data/processed/s1k_filtered.jsonl \
+#   --data data/s1k_filtered.jsonl \
 #   --output_dir checkpoints/qwen0.5b-sft-think \
 #   --max_seq_len 2048 \
 #   --epochs 1 \
@@ -61,7 +61,7 @@ print(show_mask(tok, ids[:400], labs[:400]))
 # %%
 # !python train/sft.py \
 #   --model Qwen/Qwen2.5-1.5B-Instruct \
-#   --data data/processed/s1k_filtered.jsonl \
+#   --data data/s1k_filtered.jsonl \
 #   --output_dir checkpoints/qwen1.5b-sft-think \
 #   --max_seq_len 4096 \
 #   --epochs 3 \

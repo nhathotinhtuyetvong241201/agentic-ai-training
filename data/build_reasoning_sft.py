@@ -238,7 +238,7 @@ def main():
     ap.add_argument("--max_tokens", type=int, default=4096)
     ap.add_argument("--max_samples", type=int, default=1000)
     ap.add_argument("--no_require_boxed", action="store_true")
-    ap.add_argument("--out", default="data/processed/s1k_filtered.jsonl")
+    ap.add_argument("--out", default="data/s1k_filtered.jsonl")
     args = ap.parse_args()
 
     ds, _ = build_dataset(

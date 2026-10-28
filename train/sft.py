@@ -65,7 +65,7 @@ def tokenize_and_mask(dataset, tokenizer, max_seq_len: int):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
-    ap.add_argument("--data", default="data/processed/reasoning_sft.jsonl")
+    ap.add_argument("--data", default="data/s1k_filtered.jsonl")
     ap.add_argument("--output_dir", default="checkpoints/qwen1.5b-sft-think")
     ap.add_argument("--max_seq_len", type=int, default=4096)
     ap.add_argument("--epochs", type=float, default=3.0)
