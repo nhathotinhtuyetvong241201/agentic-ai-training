@@ -18,7 +18,7 @@ Chạy chính thức trên L4/A100 (1.5B):
     --data data/processed/reasoning_sft.jsonl --output_dir checkpoints/qwen1.5b-sft-think \
     --max_seq_len 4096 --epochs 3 --batch_size 2 --grad_accum 8 --lr 1e-4
 """
-import argparse, math, pathlib, sys
+import argparse, math, os, pathlib, sys
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
@@ -88,12 +88,19 @@ def main():
     print(f"Loaded {len(train_ds)} masked samples (max_seq_len={args.max_seq_len})")
 
     bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    dtype = torch.bfloat16 if bf16_ok else torch.float16
+    dtype = torch.bfloat16 if bf16_ok else torch.float16  # T4 (sm75) không có bf16 → fp16
+
+    # Multi-GPU: chạy bằng `torchrun --nproc_per_node N` → DDP, mỗi process giữ 1 bản model
+    # trên đúng GPU của nó. device_map="auto" sẽ chia layer qua các GPU (chạy tuần tự, không
+    # nhanh hơn) và xung đột với DDP, nên chỉ dùng khi chạy 1 process.
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    device_map = {"": local_rank} if world_size > 1 else "auto"
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         dtype=dtype,
-        device_map="auto",
+        device_map=device_map,
         attn_implementation="sdpa",
     )
     model.enable_input_require_grads()
@@ -107,13 +114,17 @@ def main():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
     model = get_peft_model(model, peft_cfg)
+    # fp16 AMP yêu cầu tham số trainable ở fp32 (nếu không: "Attempting to unscale FP16 gradients").
+    for p in model.parameters():
+        if p.requires_grad:
+            p.data = p.data.float()
     model.print_trainable_parameters()
 
     # transformers v5 bỏ `warmup_ratio` → tự tính warmup_steps (int) để tương thích cả v4/v5.
-    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum))
+    steps_per_epoch = math.ceil(len(train_ds) / (args.batch_size * args.grad_accum * world_size))
     total_steps = math.ceil(steps_per_epoch * args.epochs)
     warmup_steps = max(1, int(0.05 * total_steps))
-    print(f"total_steps={total_steps}, warmup_steps={warmup_steps}")
+    print(f"world_size={world_size}, total_steps={total_steps}, warmup_steps={warmup_steps}")
 
     train_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -127,6 +138,8 @@ def main():
         bf16=bf16_ok,
         fp16=not bf16_ok and torch.cuda.is_available(),
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        ddp_find_unused_parameters=False,  # bắt buộc với LoRA + grad checkpointing trong DDP
         logging_steps=10,
         save_strategy="steps",
         save_steps=args.save_steps,
@@ -145,6 +158,8 @@ def main():
     trainer.train()
 
     trainer.save_model(args.output_dir)
+    if not trainer.is_world_process_zero():
+        return  # chỉ rank 0 lưu tokenizer & merge
     tok.save_pretrained(args.output_dir)
 
     if args.merge_and_save:
