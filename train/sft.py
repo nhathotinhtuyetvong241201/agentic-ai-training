@@ -20,6 +20,7 @@ Chạy chính thức trên L4/A100 (1.5B):
 """
 import argparse, math, os, pathlib, sys, time
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
 from transformers.trainer_callback import TrainerCallback, PrinterCallback
@@ -101,12 +102,67 @@ class AssistantOnlyCollator:
 def tokenize_and_mask(dataset, tokenizer, max_seq_len: int):
     def _proc(row):
         ids, labs = build_labels(tokenizer, row["messages"], tools=row.get("tools"))
-        return {"input_ids": ids[:max_seq_len], "labels": labs[:max_seq_len]}
+        ids, labs = ids[:max_seq_len], labs[:max_seq_len]
+        return {"input_ids": ids, "labels": labs, "length": len(ids)}
 
     ds = dataset.map(_proc, remove_columns=dataset.column_names)
     # Loại bỏ mẫu bị cắt cụt hết phần assistant (toàn -100)
     ds = ds.filter(lambda x: any(l != IGNORE_INDEX for l in x["labels"]))
     return ds
+
+
+class ChunkedLossTrainer(Trainer):
+    """Tránh tạo toàn bộ tensor logits fp32 [B, S, 151936] (~2.5GB ở S=4096) cùng lúc trên T4.
+    Chia theo chiều sequence thành các lát 512 tokens để tính Cross-Entropy, giúp tiết kiệm ~2.3GB VRAM
+    và chấm dứt hiện tượng CUDACachingAllocator phải xả cache ở mỗi micro-step.
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if return_outputs:
+            return super().compute_loss(model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch)
+
+        labels = inputs.pop("labels")
+        # Chỉ tính 1 token cuối từ lm_head trong forward gốc (nếu hỗ trợ logits_to_keep),
+        # rồi tự chạy lm_head theo từng lát 512 tokens trên hidden_states.
+        unwrapped = self.accelerator.unwrap_model(model)
+        base_causal = unwrapped.get_base_model() if hasattr(unwrapped, "get_base_model") else unwrapped
+        backbone = getattr(base_causal, "model", None)
+        lm_head = getattr(base_causal, "lm_head", None)
+
+        if backbone is None or lm_head is None:
+            inputs["labels"] = labels
+            return super().compute_loss(model, inputs, return_outputs=False, num_items_in_batch=num_items_in_batch)
+
+        out = backbone(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask"),
+            use_cache=False,
+        )
+        hidden = out[0]  # [B, S, H]
+        shift_hidden = hidden[:, :-1, :].contiguous().view(-1, hidden.size(-1))
+        shift_labels = labels[:, 1:].contiguous().view(-1)
+
+        valid_mask = shift_labels != IGNORE_INDEX
+        if not valid_mask.any():
+            return hidden.sum() * 0.0
+
+        # Chỉ chiếu lm_head trên những vị trí có label != -100 (bỏ qua hoàn toàn prompt & padding!)
+        active_hidden = shift_hidden[valid_mask]
+        active_labels = shift_labels[valid_mask]
+
+        chunk_size = 256
+        losses = []
+        for i in range(0, active_hidden.size(0), chunk_size):
+            h_chunk = active_hidden[i : i + chunk_size]
+            y_chunk = active_labels[i : i + chunk_size]
+            logits_chunk = torch.utils.checkpoint.checkpoint(
+                lambda h: lm_head(h).float(), h_chunk, use_reentrant=False
+            )
+            losses.append(F.cross_entropy(logits_chunk, y_chunk, reduction="sum"))
+
+        total_loss = torch.stack(losses).sum()
+        denom = num_items_in_batch if num_items_in_batch is not None else active_labels.numel()
+        return total_loss / denom
 
 
 def main():
@@ -192,6 +248,8 @@ def main():
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         ddp_find_unused_parameters=False,  # bắt buộc với LoRA + grad checkpointing trong DDP
+        group_by_length=True,
+        length_column_name="length",
         logging_steps=args.logging_steps,
         logging_first_step=True,
         disable_tqdm=not args.tqdm,
@@ -203,7 +261,7 @@ def main():
         report_to="none",
     )
 
-    trainer = Trainer(
+    trainer = ChunkedLossTrainer(
         model=model,
         args=train_args,
         train_dataset=train_ds,
