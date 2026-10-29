@@ -18,14 +18,61 @@ Chạy chính thức trên L4/A100 (1.5B):
     --data data/processed/reasoning_sft.jsonl --output_dir checkpoints/qwen1.5b-sft-think \
     --max_seq_len 4096 --epochs 3 --batch_size 2 --grad_accum 8 --lr 1e-4
 """
-import argparse, math, os, pathlib, sys
+import argparse, math, os, pathlib, sys, time
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
+from transformers.trainer_callback import TrainerCallback, PrinterCallback
 from peft import LoraConfig, get_peft_model
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from chat_utils import build_labels, IGNORE_INDEX
+
+
+def log(msg: str, log_file: str | None = None):
+    """print + flush ngay (Kaggle/Colab/torchrun không phải TTY → stdout bị buffer)."""
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    print(line, flush=True)
+    if log_file:
+        with open(log_file, "a") as f:
+            f.write(line + "\n")
+
+
+class ProgressLogger(TrainerCallback):
+    """Thay tqdm bằng log từng dòng: step/total, loss, lr, grad_norm, tốc độ, ETA, VRAM."""
+
+    def __init__(self, log_file: str | None = None):
+        self.log_file = log_file
+        self.t0 = None
+
+    def on_train_begin(self, args, state, control, **kw):
+        self.t0 = time.time()
+        if state.is_world_process_zero:
+            log(f"Bắt đầu train: max_steps={state.max_steps}", self.log_file)
+
+    def on_log(self, args, state, control, logs=None, **kw):
+        if not state.is_world_process_zero or not logs or "loss" not in logs:
+            return
+        step, total = state.global_step, max(state.max_steps, 1)
+        elapsed = time.time() - self.t0
+        sec_per_step = elapsed / max(step, 1)
+        eta_min = sec_per_step * (total - step) / 60
+        mem = torch.cuda.max_memory_allocated() / 2**30 if torch.cuda.is_available() else 0
+        log(
+            f"step {step}/{total} ({100 * step / total:.1f}%) | "
+            f"loss {logs['loss']:.4f} | lr {logs.get('learning_rate', 0):.2e} | "
+            f"grad_norm {logs.get('grad_norm', float('nan')):.3f} | "
+            f"{sec_per_step:.1f}s/step | ETA {eta_min:.0f} min | peak VRAM {mem:.1f}GB",
+            self.log_file,
+        )
+
+    def on_save(self, args, state, control, **kw):
+        if state.is_world_process_zero:
+            log(f"Checkpoint saved at step {state.global_step}", self.log_file)
+
+    def on_train_end(self, args, state, control, **kw):
+        if state.is_world_process_zero:
+            log(f"Train xong sau {(time.time() - self.t0) / 60:.1f} phút", self.log_file)
 
 
 class AssistantOnlyCollator:
@@ -77,7 +124,12 @@ def main():
     ap.add_argument("--save_steps", type=int, default=50)
     ap.add_argument("--hub_model_id", default=None, help="VD: username/qwen1.5b-sft-think")
     ap.add_argument("--merge_and_save", action="store_true", help="Merge LoRA vào base để chạy vLLM")
+    ap.add_argument("--logging_steps", type=int, default=1)
+    ap.add_argument("--log_file", default=None, help="Ghi thêm log ra file, VD logs/sft.log")
+    ap.add_argument("--tqdm", action="store_true", help="Bật thanh tqdm (chỉ hữu ích khi chạy trong terminal)")
     args = ap.parse_args()
+    if args.log_file:
+        pathlib.Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
 
     tok = AutoTokenizer.from_pretrained(args.model)
     if tok.pad_token_id is None:
@@ -140,7 +192,9 @@ def main():
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         ddp_find_unused_parameters=False,  # bắt buộc với LoRA + grad checkpointing trong DDP
-        logging_steps=10,
+        logging_steps=args.logging_steps,
+        logging_first_step=True,
+        disable_tqdm=not args.tqdm,
         save_strategy="steps",
         save_steps=args.save_steps,
         save_total_limit=2,
@@ -155,6 +209,9 @@ def main():
         train_dataset=train_ds,
         data_collator=AssistantOnlyCollator(tok.pad_token_id),
     )
+    # Khi tắt tqdm, Trainer tự thêm PrinterCallback in dict thô → bỏ đi, dùng ProgressLogger.
+    trainer.remove_callback(PrinterCallback)
+    trainer.add_callback(ProgressLogger(args.log_file))
     trainer.train()
 
     trainer.save_model(args.output_dir)
