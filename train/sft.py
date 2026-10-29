@@ -103,7 +103,7 @@ def tokenize_and_mask(dataset, tokenizer, max_seq_len: int):
     def _proc(row):
         ids, labs = build_labels(tokenizer, row["messages"], tools=row.get("tools"))
         ids, labs = ids[:max_seq_len], labs[:max_seq_len]
-        return {"input_ids": ids, "labels": labs, "length": len(ids)}
+        return {"input_ids": ids, "labels": labs}
 
     ds = dataset.map(_proc, remove_columns=dataset.column_names)
     # Loại bỏ mẫu bị cắt cụt hết phần assistant (toàn -100)
@@ -248,8 +248,6 @@ def main():
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         ddp_find_unused_parameters=False,  # bắt buộc với LoRA + grad checkpointing trong DDP
-        group_by_length=True,
-        length_column_name="length",
         logging_steps=args.logging_steps,
         logging_first_step=True,
         disable_tqdm=not args.tqdm,
