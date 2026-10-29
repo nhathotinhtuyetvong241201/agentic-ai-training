@@ -161,8 +161,12 @@ class ChunkedLossTrainer(Trainer):
             losses.append(F.cross_entropy(logits_chunk, y_chunk, reduction="sum"))
 
         total_loss = torch.stack(losses).sum()
-        denom = num_items_in_batch if num_items_in_batch is not None else active_labels.numel()
-        return total_loss / denom
+        if num_items_in_batch is not None:
+            # Trong DDP, Trainer của transformers chia trungbinh gradient qua các GPU nhưng
+            # num_items_in_batch là tổng token của toàn bộ world_size -> cần nhân bù world_size.
+            scale = self.args.world_size if getattr(self.args, "average_tokens_across_devices", True) else 1
+            return (total_loss * scale) / num_items_in_batch
+        return total_loss / (active_labels.numel() * self.args.gradient_accumulation_steps)
 
 
 def main():
@@ -183,6 +187,7 @@ def main():
     ap.add_argument("--logging_steps", type=int, default=1)
     ap.add_argument("--log_file", default=None, help="Ghi thêm log ra file, VD logs/sft.log")
     ap.add_argument("--tqdm", action="store_true", help="Bật thanh tqdm (chỉ hữu ích khi chạy trong terminal)")
+    ap.add_argument("--no_grad_checkpoint", action="store_true", help="Tắt gradient checkpointing để tăng tốc ~30% khi dư VRAM")
     args = ap.parse_args()
     if args.log_file:
         pathlib.Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
@@ -245,8 +250,8 @@ def main():
         weight_decay=0.01,
         bf16=bf16_ok,
         fp16=not bf16_ok and torch.cuda.is_available(),
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing=not args.no_grad_checkpoint,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if not args.no_grad_checkpoint else None,
         ddp_find_unused_parameters=False,  # bắt buộc với LoRA + grad checkpointing trong DDP
         logging_steps=args.logging_steps,
         logging_first_step=True,
